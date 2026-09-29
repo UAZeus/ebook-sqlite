@@ -11,7 +11,22 @@ class Database
 
     private function __construct()
     {
-        $dbPath = __DIR__ . '/../database/ebook.db';
+        if (!in_array('sqlite', \PDO::getAvailableDrivers(), true)) {
+            throw new \RuntimeException(
+                'PDO SQLite driver not found. Install/enable it:' . PHP_EOL .
+                '  Windows: enable extension=pdo_sqlite and extension=sqlite3 in php.ini' . PHP_EOL .
+                '  Linux:   install php-sqlite3 (e.g. sudo apt install php-sqlite3) and restart PHP'
+            );
+        }
+
+        // Cross-platform path: __DIR__ + DIRECTORY_SEPARATOR works on
+        // Windows (\) and Linux (/); PHP also accepts / on Windows.
+        $dbDir = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'database';
+        $realDir = realpath($dbDir) ?: $dbDir;
+        if (!is_dir($realDir) && !@mkdir($realDir, 0777, true) && !is_dir($realDir)) {
+            throw new \RuntimeException('Cannot create database directory: ' . $realDir);
+        }
+        $dbPath = rtrim($realDir, '/\\') . DIRECTORY_SEPARATOR . 'ebook.db';
 
         $this->pdo = new \PDO(
             "sqlite:$dbPath",
