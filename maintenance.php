@@ -5,14 +5,17 @@ declare(strict_types=1);
 /**
  * Database maintenance script.
  *
- * Usage:
+ * Usage (identical on Windows + Linux):
  *   php maintenance.php                  # full maintenance
  *   php maintenance.php --vacuum         # VACUUM + ANALYZE only
  *   php maintenance.php --archive        # 180-day archival (soft-delete old logs)
  *   php maintenance.php --purge          # hard-delete soft-deleted records
  *
- * Schedule via cron (e.g., weekly):
- *   0 3 * * 0  php /path/to/maintenance.php
+ * Schedule weekly:
+ *   Linux (cron):   0 3 * * 0  php /path/to/maintenance.php
+ *   Windows:        Task Scheduler -> Create Basic Task -> weekly ->
+ *                   Action "Start a program": php.exe, argument maintenance.php,
+ *                   Start in: C:\path\to\ebook-sqlite
  */
 
 require_once __DIR__ . '/config/database.php';
