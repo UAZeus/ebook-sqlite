@@ -9,9 +9,12 @@ use App\Config\Auth;
 use App\Config\Database;
 
 header('Content-Type: application/json');
-header('Access-Control-Allow-Origin: *');
+// Same-origin app: no wildcard CORS. Cookie/session auth must never be
+// combined with `Access-Control-Allow-Origin: *`. Cross-origin API access
+// should use an explicit allowlist if ever needed.
+// Preflight support for same-origin fetch:
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-CSRF-Token');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(204);
@@ -338,8 +341,11 @@ try {
             "SELECT file_path, title FROM books WHERE book_id = ? AND status = 'approved'", [$id]
         );
         if (!$book || !$book['file_path']) json(['error' => 'File not found'], 404);
-        $fullPath = __DIR__ . '/../' . $book['file_path'];
-        if (!file_exists($fullPath)) json(['error' => 'File not found on disk'], 404);
+        $fullPath = realpath(__DIR__ . '/../' . $book['file_path']);
+        $uploadsRoot = realpath(__DIR__ . '/../uploads');
+        if ($fullPath === false || $uploadsRoot === false || !str_starts_with($fullPath, $uploadsRoot) || !is_file($fullPath)) {
+            json(['error' => 'File not found on disk'], 404);
+        }
         header('Content-Type: application/pdf');
         header('Content-Disposition: attachment; filename="' . basename($fullPath) . '"');
         header('Content-Length: ' . filesize($fullPath));
@@ -353,8 +359,11 @@ try {
             "SELECT file_path FROM books WHERE book_id = ? AND status = 'approved'", [$id]
         );
         if (!$book || !$book['file_path']) json(['error' => 'File not found'], 404);
-        $fullPath = __DIR__ . '/../' . $book['file_path'];
-        if (!file_exists($fullPath)) json(['error' => 'File not found on disk'], 404);
+        $fullPath = realpath(__DIR__ . '/../' . $book['file_path']);
+        $uploadsRoot = realpath(__DIR__ . '/../uploads');
+        if ($fullPath === false || $uploadsRoot === false || !str_starts_with($fullPath, $uploadsRoot) || !is_file($fullPath)) {
+            json(['error' => 'File not found on disk'], 404);
+        }
         header('Content-Type: application/pdf');
         header('Content-Disposition: inline; filename="' . basename($fullPath) . '"');
         header('Content-Length: ' . filesize($fullPath));
@@ -778,22 +787,54 @@ try {
         $pdf         = $_FILES['pdf'] ?? null;
 
         if ($title === '' || $authorName === '') json(['error' => 'Title and author required'], 422);
+        if (mb_strlen($title) > 255 || mb_strlen($authorName) > 255) json(['error' => 'Title/author too long (max 255)'], 422);
+        if (mb_strlen($description) > 10000) json(['error' => 'Description too long (max 10000)'], 422);
+        if ($genreId !== 0) {
+            $genreRow = $db->fetchOne('SELECT genre_id FROM genres WHERE genre_id = ?', [$genreId]);
+            if (!$genreRow) json(['error' => 'Invalid genre'], 422);
+        }
+        $currentYear = (int) date('Y');
+        if ($year !== 0 && ($year < 0 || $year > $currentYear + 1)) json(['error' => 'Invalid year'], 422);
+        if ($pages < 0 || $pages > 100000) json(['error' => 'Invalid page count'], 422);
         if (!$pdf || $pdf['error'] !== UPLOAD_ERR_OK) json(['error' => 'PDF file required'], 422);
         if (strtolower(pathinfo($pdf['name'], PATHINFO_EXTENSION)) !== 'pdf') json(['error' => 'Only PDF files allowed'], 422);
         if ($pdf['size'] > 50 * 1024 * 1024) json(['error' => 'File too large (max 50 MB)'], 422);
+        // MIME check (client extension is trivially spoofable)
+        $finfo = new finfo(FILEINFO_MIME_TYPE);
+        $mime = $finfo->file($pdf['tmp_name']);
+        if ($mime !== 'application/pdf') json(['error' => 'Invalid PDF file'], 422);
 
+        // Cross-platform dirs: __DIR__ + DIRECTORY_SEPARATOR; mkdir recursive
+        // so uploads work on Windows + Linux even from a fresh checkout.
+        $appRoot = realpath(__DIR__ . DIRECTORY_SEPARATOR . '..') ?: (__DIR__ . DIRECTORY_SEPARATOR . '..');
+        $uploadsDir = $appRoot . DIRECTORY_SEPARATOR . 'uploads';
+        $coversDir = $uploadsDir . DIRECTORY_SEPARATOR . 'covers';
+        foreach ([$uploadsDir, $coversDir] as $dir) {
+            if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+                json(['error' => 'Upload directory unavailable'], 500);
+            }
+        }
+
+        // Single timestamp + random suffix: avoids collisions when two uploads
+        // share a title/second, and fixes the old dual-time() cover bug where
+        // the resized cover was renamed to a different timestamped name.
         $safe = preg_replace('/[^a-zA-Z0-9_-]/', '_', $title);
-        $pdfDest = 'uploads/' . $safe . '_' . time() . '.pdf';
+        $safe = trim($safe, '_');
+        if ($safe === '') $safe = 'book';
+        $safe = substr($safe, 0, 80);
+        $stamp = time() . '_' . bin2hex(random_bytes(4));
+        $pdfDest = 'uploads/' . $safe . '_' . $stamp . '.pdf';
+        $pdfFull = $appRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $pdfDest);
 
-        if (!move_uploaded_file($pdf['tmp_name'], __DIR__ . '/../' . $pdfDest)) {
+        if (!move_uploaded_file($pdf['tmp_name'], $pdfFull)) {
             json(['error' => 'Failed to save file'], 500);
         }
-        // Verify PDF magic bytes (%PDF)
-        $fh = fopen(__DIR__ . '/../' . $pdfDest, 'rb');
-        $magic = fread($fh, 4);
-        fclose($fh);
+        // Verify PDF magic bytes (%PDF) after move
+        $fh = fopen($pdfFull, 'rb');
+        $magic = $fh ? fread($fh, 4) : false;
+        if ($fh) fclose($fh);
         if ($magic !== '%PDF') {
-            unlink(__DIR__ . '/../' . $pdfDest);
+            @unlink($pdfFull);
             json(['error' => 'Invalid PDF file'], 422);
         }
 
@@ -802,38 +843,51 @@ try {
         if ($cover && $cover['error'] === UPLOAD_ERR_OK) {
             $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
             $ext = strtolower(pathinfo($cover['name'], PATHINFO_EXTENSION));
-            if (in_array($ext, $allowed, true)) {
-                $coverDest = 'uploads/covers/' . $safe . '_' . time() . '.' . $ext;
-                $coverPath = __DIR__ . '/../' . $coverDest;
-                if (move_uploaded_file($cover['tmp_name'], $coverPath)) {
-                    // Resize to max 600px wide, JPEG 85%
-                    [$w, $h] = @getimagesize($coverPath);
-                    $maxW = 600;
-                    if ($w && $w > $maxW) {
-                        $nh = (int) round($h * $maxW / $w);
-                        $src = match ($ext) {
-                            'jpeg', 'jpg' => @imagecreatefromjpeg($coverPath),
-                            'png'         => @imagecreatefrompng($coverPath),
-                            'gif'         => @imagecreatefromgif($coverPath),
-                            'webp'        => @imagecreatefromwebp($coverPath),
-                            default       => null,
-                        };
-                        if ($src) {
-                            $thumb = imagecreatetruecolor($maxW, $nh);
-                            if ($ext === 'png' || $ext === 'gif') {
-                                imagealphablending($thumb, false);
-                                imagesavealpha($thumb, true);
-                            }
-                            imagecopyresampled($thumb, $src, 0, 0, 0, 0, $maxW, $nh, $w, $h);
-                            imagejpeg($thumb, $coverPath, 85);
-                            imagedestroy($src);
-                            imagedestroy($thumb);
-                            $coverDest = 'uploads/covers/' . $safe . '_' . time() . '.jpg';
-                            rename($coverPath, __DIR__ . '/../' . $coverDest);
+            if (!in_array($ext, $allowed, true)) json(['error' => 'Invalid cover image type'], 422);
+            if ($cover['size'] > 10 * 1024 * 1024) {
+                @unlink($pdfFull);
+                json(['error' => 'Cover too large (max 10 MB)'], 422);
+            }
+            $coverMime = (new finfo(FILEINFO_MIME_TYPE))->file($cover['tmp_name']);
+            if (!str_starts_with((string) $coverMime, 'image/')) {
+                @unlink($pdfFull);
+                json(['error' => 'Invalid cover image'], 422);
+            }
+            // Normalize to .jpg when GD resizes; keep original ext otherwise.
+            $coverDest = 'uploads/covers/' . $safe . '_' . $stamp . '.' . $ext;
+            $coverPath = $appRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $coverDest);
+            if (move_uploaded_file($cover['tmp_name'], $coverPath)) {
+                // Resize to max 600px wide, JPEG 85% (skipped if GD missing)
+                $size = @getimagesize($coverPath);
+                $maxW = 600;
+                if ($size && $size[0] > $maxW && function_exists('imagecreatetruecolor')) {
+                    [$w, $h] = $size;
+                    $nh = (int) round($h * $maxW / $w);
+                    $src = match ($ext) {
+                        'jpeg', 'jpg' => @imagecreatefromjpeg($coverPath),
+                        'png'         => @imagecreatefrompng($coverPath),
+                        'gif'         => @imagecreatefromgif($coverPath),
+                        'webp'        => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($coverPath) : null,
+                        default       => null,
+                    };
+                    if ($src) {
+                        $thumb = imagecreatetruecolor($maxW, $nh);
+                        if ($ext === 'png' || $ext === 'gif') {
+                            imagealphablending($thumb, false);
+                            imagesavealpha($thumb, true);
                         }
+                        imagecopyresampled($thumb, $src, 0, 0, 0, 0, $maxW, $nh, $w, $h);
+                        $jpgDest = 'uploads/covers/' . $safe . '_' . $stamp . '.jpg';
+                        $jpgPath = $appRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $jpgDest);
+                        if (imagejpeg($thumb, $jpgPath, 85)) {
+                            @unlink($coverPath);
+                            $coverDest = $jpgDest;
+                        }
+                        imagedestroy($src);
+                        imagedestroy($thumb);
                     }
-                    $coverUrl = $coverDest;
                 }
+                $coverUrl = $coverDest;
             }
         }
 
