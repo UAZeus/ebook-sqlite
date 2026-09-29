@@ -42,9 +42,34 @@ if ($path === '' || $path === '/') {
     return true;
 }
 
+// ─── Block sensitive paths (built-in server would otherwise serve them) ─
+// Without this, GET /database/ebook.db downloads the full DB (password
+// hashes included) and /config/*.key leaks the TLS private key. The nginx
+// configs already block these; the router must too for `php -S`.
+$blockedPrefixes = ['/config', '/database', '/partials', '/deploy', '/.git'];
+foreach ($blockedPrefixes as $prefix) {
+    if ($path === $prefix || str_starts_with($path, $prefix . '/')) {
+        http_response_code(404);
+        echo '<h1>404 Not Found</h1>';
+        return true;
+    }
+}
+$blockedExtensions = ['.db', '.db-wal', '.db-shm', '.sqlite', '.sqlite3', '.key', '.pem', '.env'];
+foreach ($blockedExtensions as $ext) {
+    if (str_ends_with(strtolower($path), $ext) || str_contains($path, '/.env')) {
+        http_response_code(404);
+        echo '<h1>404 Not Found</h1>';
+        return true;
+    }
+}
+
 // ─── Static files (let PHP built-in server handle) ─
+// Resolve realpath and contain it inside the project dir (defense in depth;
+// works with both / and \ separators on Windows + Linux).
 $filePath = __DIR__ . '/' . ltrim($path, '/');
-if (is_file($filePath)) {
+$realBase = realpath(__DIR__);
+$realFile = realpath($filePath);
+if ($realFile !== false && $realBase !== false && str_starts_with($realFile, $realBase) && is_file($realFile)) {
     return false;
 }
 
