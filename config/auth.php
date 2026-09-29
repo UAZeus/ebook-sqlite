@@ -159,7 +159,7 @@ class Auth
         return $user;
     }
 
-    public static function isGmail(string $email): ?string
+    public static function validateGmailDomain(string $email): ?string
     {
         $domain = strtolower(explode('@', $email)[1] ?? '');
         if ($domain !== 'gmail.com') {

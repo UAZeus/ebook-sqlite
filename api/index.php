@@ -134,7 +134,7 @@ try {
     if ($path === '/api/auth/login' && $method === 'POST') {
         checkRateLimit();
         $data = body();
-        $emailErr = Auth::isGmail($data['email'] ?? '');
+        $emailErr = Auth::validateGmailDomain($data['email'] ?? '');
         if ($emailErr) json(['error' => $emailErr], 422);
         $result = $auth->login($data['email'] ?? '', $data['password'] ?? '', !empty($data['remember']));
         if (!$result['success']) {
@@ -147,7 +147,7 @@ try {
 
     if ($path === '/api/auth/register' && $method === 'POST') {
         $data = body();
-        $emailErr = Auth::isGmail($data['email'] ?? '');
+        $emailErr = Auth::validateGmailDomain($data['email'] ?? '');
         if ($emailErr) json(['error' => $emailErr], 422);
         $pwErr = Auth::validatePassword($data['password'] ?? '');
         if ($pwErr) json(['error' => $pwErr], 422);
