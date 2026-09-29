@@ -13,6 +13,18 @@ class Auth
     private const REMEMBER_ME_DAYS = 30;
     private const PASSWORD_REGEX = '/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[\W_]).{8,72}$/';
 
+    private static function isHttps(): bool
+    {
+        return !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+    }
+
+    private static function rememberCookieParams(): array
+    {
+        // secure=true only over HTTPS; SameSite=Lax matches session cookies.
+        // setcookie() signature: (name, value, expires, path, domain, secure, httponly)
+        return ['/', '', self::isHttps(), true];
+    }
+
     public function csrfToken(): string
     {
         if (empty($_SESSION['csrf_token'])) {
@@ -177,7 +189,8 @@ class Auth
             [$hash]
         );
         if (!$row) {
-            setcookie('remember_me', '', time() - 3600, '/', '', false, true);
+            [$cPath, $cDomain, $cSecure, $cHttpOnly] = self::rememberCookieParams();
+            setcookie('remember_me', '', time() - 3600, $cPath, $cDomain, $cSecure, $cHttpOnly);
             return;
         }
 
@@ -189,7 +202,8 @@ class Auth
             'INSERT INTO remember_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
             [$row['user_id'], $newHash, $expires]
         );
-        setcookie('remember_me', $newToken, strtotime($expires), '/', '', false, true);
+        [$cPath, $cDomain, $cSecure, $cHttpOnly] = self::rememberCookieParams();
+        setcookie('remember_me', $newToken, strtotime($expires), $cPath, $cDomain, $cSecure, $cHttpOnly);
 
         $_SESSION['user_id'] = $row['user_id'];
         session_regenerate_id(true);
@@ -217,14 +231,24 @@ class Auth
                 'INSERT INTO remember_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
                 [$user['user_id'], $hash, $expires]
             );
-            setcookie('remember_me', $token, strtotime($expires), '/', '', false, true);
+            [$cPath, $cDomain, $cSecure, $cHttpOnly] = self::rememberCookieParams();
+            setcookie('remember_me', $token, strtotime($expires), $cPath, $cDomain, $cSecure, $cHttpOnly);
         }
 
-        return ['success' => true, 'user' => $user];
+        // Never expose the password hash: return only the public profile.
+        $safe = $this->db->fetchOne(
+            'SELECT user_id, name, email, role, created_at FROM users WHERE user_id = ?',
+            [$user['user_id']]
+        );
+        $this->user = $safe ?: $this->user;
+        return ['success' => true, 'user' => $this->user];
     }
 
     public function register(string $name, string $email, string $password, string $role = 'viewer'): array
     {
+        // Role is server-controlled: public registration can only create viewers.
+        // Librarian/admin promotion happens via PUT /api/admin/users/:id/role.
+        $role = 'viewer';
         $email = strtolower(trim($email));
 
         $pwErr = self::validatePassword($password);
@@ -253,7 +277,8 @@ class Auth
         $_SESSION = [];
         $params = session_get_cookie_params();
         setcookie(session_name(), '', time() - 3600, $params['path'], $params['domain'], $params['secure'], $params['httponly']);
-        setcookie('remember_me', '', time() - 3600, '/', '', false, true);
+        [$cPath, $cDomain, $cSecure, $cHttpOnly] = self::rememberCookieParams();
+        setcookie('remember_me', '', time() - 3600, $cPath, $cDomain, $cSecure, $cHttpOnly);
         session_destroy();
         $this->user = null;
     }
