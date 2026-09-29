@@ -1,0 +1,15 @@
+{
+    "name": "ebook/ebook-sqlite",
+    "description": "E-Book Library — plain PHP + SQLite",
+    "require": {
+        "php": ">=8.1",
+        "ext-pdo_sqlite": "*"
+    },
+    "scripts": {
+        "serve": "php serve.php",
+        "seed": "php seed.php",
+        "cleanup": "php cleanup.php",
+        "cleanup:delete": "php cleanup.php --delete",
+        "maintenance": "php maintenance.php"
+    }
+}
