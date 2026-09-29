@@ -1,25 +1,10 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
+#!/usr/bin/env sh
+# DEPRECATED wrapper — kept for backward compatibility.
+# The old script connected to MySQL (pdo_mysql, ebook_library, root/123) and
+# compared absolute disk paths to DB-relative paths, which would have deleted
+# every upload. Use the SQLite-based, cross-platform cleanup.php instead:
+#   php cleanup.php            # dry run (default, deletes nothing)
+#   php cleanup.php --delete   # actually delete orphans
+set -eu
 DIR="$(cd "$(dirname "$0")" && pwd)"
-
-php -d extension=pdo_mysql -r '
-$dir = $argv[1];
-$db = new PDO("mysql:host=localhost;dbname=ebook_library;charset=utf8mb4", "root", "123");
-
-$refs = $db->query("SELECT file_path FROM books WHERE file_path IS NOT NULL")
-           ->fetchAll(PDO::FETCH_COLUMN);
-$refs = array_merge($refs,
-    $db->query("SELECT cover_url FROM books WHERE cover_url IS NOT NULL")
-       ->fetchAll(PDO::FETCH_COLUMN));
-
-$removed = 0;
-foreach (glob($dir . "/uploads/*.pdf") as $f) {
-    if (!in_array($f, $refs, true)) { unlink($f); $removed++; }
-}
-foreach (glob($dir . "/uploads/covers/*") as $f) {
-    if (!in_array($f, $refs, true)) { unlink($f); $removed++; }
-}
-
-echo "Removed {$removed} orphaned file(s).\n";
-' "$DIR"
+exec php "$DIR/cleanup.php" --delete "$@"
