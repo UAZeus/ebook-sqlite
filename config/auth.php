@@ -288,3 +288,5 @@ class Auth
         return bin2hex(random_bytes(16));
     }
 }
+
+//add comment
