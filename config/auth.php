@@ -251,6 +251,8 @@ class Auth
         $role = 'viewer';
         $email = strtolower(trim($email));
 
+        if (trim($name) === '') return ['success' => false, 'error' => 'Name is required.'];
+
         $pwErr = self::validatePassword($password);
         if ($pwErr) return ['success' => false, 'error' => $pwErr];
 
